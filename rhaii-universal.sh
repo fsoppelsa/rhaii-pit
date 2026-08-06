@@ -92,20 +92,31 @@ if [ -z "$MODEL" ]; then
   fi
 fi
 
-IMAGE="${RHAII_IMAGE:-${RHAII_IMAGE:-registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.2}}"
+if [ "${RHAII_UPSTREAM:-0}" = "1" ]; then
+  IMAGE="${RHAII_IMAGE:-docker.io/vllm/vllm-openai:latest}"
+  CONTAINER_CACHE_PATH="/root/.cache"
+else
+  IMAGE="${RHAII_IMAGE:-registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.2}"
+  CONTAINER_CACHE_PATH="/opt/app-root/src/.cache"
+fi
 CACHE_DIR="${RHAII_CACHE_DIR:-${RHAII_CACHE_DIR:-$HOME/rhaii-cache}}"
 LOG_DIR="${RHAII_LOG_DIR:-${RHAII_LOG_DIR:-$PWD/logs}}"
 CONTAINER_NAME="${RHAII_CONTAINER_NAME:-${RHAII_CONTAINER_NAME:-rhaii}}"
 PORT="${RHAII_PORT:-${RHAII_PORT:-8000}}"
 SHM_SIZE="${RHAII_SHM_SIZE:-${RHAII_SHM_SIZE:-4g}}"
-USERNS_MODE="${RHAII_USERNS_MODE:-${RHAII_USERNS_MODE:-keep-id}}"
+# Upstream vLLM runs as root (no userns needed). RHAII runs as non-root (needs keep-id).
+if [ "${RHAII_UPSTREAM:-0}" = "1" ]; then
+  USERNS_MODE="${RHAII_USERNS_MODE:-}"
+else
+  USERNS_MODE="${RHAII_USERNS_MODE:-keep-id}"
+fi
 MODEL_DOWNLOADER_SCRIPT="${RHAII_MODEL_DOWNLOADER_SCRIPT:-${RHAII_MODEL_DOWNLOADER_SCRIPT:-$ROOT_DIR/model-downloader.sh}}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 DTYPE="${VLLM_DTYPE:-half}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-${MODEL_KEY}}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-}"
 HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 RHAII_FOLLOW_LOGS="${RHAII_FOLLOW_LOGS:-${RHAII_FOLLOW_LOGS:-1}}"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
@@ -136,8 +147,9 @@ if [ -z "$GPU_MEMORY_UTILIZATION" ] || [ -z "$MAX_MODEL_LEN" ] || [ -z "$MAX_NUM
   case "$MODEL_KEY" in
     deepseek_r1_qwen_14b_awq)
       GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
-      MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
+      MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
       MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
+      SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-fedyagpt_14b}"
       ;;
     qwen3_14b)
       GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
@@ -169,20 +181,25 @@ fi
 if [ -n "$MODEL_QUANTIZATION" ]; then
   VLLM_EXTRA_ARGS+=(--quantization "$MODEL_QUANTIZATION")
 fi
-
 VLLM_CHAT_TEMPLATE_ARGS=()
 CHAT_TEMPLATE_HOST_PATH="$CACHE_DIR/chat_template.jinja"
 if [ -f "$CHAT_TEMPLATE_HOST_PATH" ]; then
   VLLM_CHAT_TEMPLATE_ARGS=(
-    --chat-template "/opt/app-root/src/.cache/chat_template.jinja"
+    --chat-template "$CONTAINER_CACHE_PATH/chat_template.jinja"
   )
 fi
 
 case "$MODEL_KEY" in
+  deepseek_r1_qwen_14b_awq)
+    VLLM_EXTRA_ARGS+=(
+      --enable-auto-tool-choice
+      --tool-call-parser xlam
+    )
+    ;;
   qwen3_14b)
     VLLM_EXTRA_ARGS+=(
       --enable-auto-tool-choice
-      --tool-call-parser qwen3_xml
+      --tool-call-parser hermes
       --reasoning-parser qwen3
     )
     VLLM_CHAT_TEMPLATE_ARGS=()
@@ -229,6 +246,7 @@ fi
 
 echo "Starting container: $CONTAINER_NAME"
 echo "Model: $MODEL"
+echo "Backend: $([ "${RHAII_UPSTREAM:-0}" = "1" ] && echo "Upstream vLLM" || echo "Red Hat AI Inference")"
 echo "Image: $IMAGE"
 echo "Endpoint (IPv4): http://0.0.0.0:$PORT"
 echo "Endpoint (IPv6): http://[::]:$PORT"
@@ -250,20 +268,27 @@ if [ "${RHAII_EXPLICIT_IPV6_BIND:-${RHAII_EXPLICIT_IPV6_BIND:-0}}" = "1" ]; then
   )
 fi
 
+# vLLM 0.26+ uses positional model arg; older/RHAII uses --model flag.
+if [ "${RHAII_UPSTREAM:-0}" = "1" ]; then
+  MODEL_ARGS=("$MODEL")
+else
+  MODEL_ARGS=(--model "$MODEL")
+fi
+
 podman run -d --rm \
   --name "$CONTAINER_NAME" \
+  ${USERNS_MODE:+--userns="$USERNS_MODE"} \
   --device nvidia.com/gpu=all \
   --security-opt=label=disable \
   --shm-size="$SHM_SIZE" \
   "${PUBLISH_ARGS[@]}" \
-  --userns="$USERNS_MODE" \
   --env "HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}" \
   --env "HF_HUB_OFFLINE=$RUNTIME_HF_HUB_OFFLINE" \
   --env "VLLM_NO_USAGE_STATS=1" \
   --env "PYTORCH_ALLOC_CONF=expandable_segments:True" \
-  -v "$CACHE_DIR:/opt/app-root/src/.cache:Z" \
+  -v "$CACHE_DIR:$CONTAINER_CACHE_PATH:Z" \
   "$IMAGE" \
-  --model "$MODEL" \
+  "${MODEL_ARGS[@]}" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --host 0.0.0.0 \
   --port 8000 \

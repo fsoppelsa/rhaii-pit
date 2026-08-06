@@ -8,6 +8,7 @@ set -euo pipefail
 # MODEL: a catalog key (deepseek_r1_qwen_14b_awq, qwen3_4b, qwen3_14b,
 #        granite_8b, llama31_8b, whiterabbit_7b_awq) or a raw Hugging Face id.
 MODEL="deepseek_r1_qwen_14b_awq"
+UPSTREAM=0                       # 0 = Red Hat AI Inference, 1 = upstream vLLM
 BACKEND_PORT=8000                # vLLM OpenAI API port
 PROXY_PORT=8001                  # reasoning-hiding proxy port
 CACHE_DIR="$HOME/rhaii-cache"    # Hugging Face model cache
@@ -25,6 +26,7 @@ RHAII_PROXY_PORT="${RHAII_PROXY_PORT:-$PROXY_PORT}"
 RHAII_CACHE_DIR="${RHAII_CACHE_DIR:-$CACHE_DIR}"
 WEBUI_PUBLIC_HOST="${WEBUI_PUBLIC_HOST:-$WEBUI_HOST}"
 RHAII_API_KEY="${RHAII_API_KEY:-}"   # normally set with --bearer
+RHAII_UPSTREAM="${RHAII_UPSTREAM:-$UPSTREAM}"   # 0 = Red Hat, 1 = upstream vLLM
 
 # Component scripts
 RHAII_SCRIPT="$ROOT_DIR/rhaii-universal.sh"
@@ -54,12 +56,13 @@ usage() {
 Usage: inference-manage.sh <command> [options]
 
 Commands:
-  start                Start the RHAII backend only (headless).
+  start rhaii          Start the Red Hat AI Inference backend (headless).
+  start upstream       Start the upstream vLLM backend (headless).
   stop                 Stop every component that is running (backend, proxy, WebUI).
   smoke-test           Probe the already-running backend and report whether the
                        model answers (non-zero exit if it does not).
 
-Start options (combinable):
+Start options (combinable with 'start rhaii' or 'start upstream'):
   --bearer <key>       Require this Bearer token on the API (enables vLLM auth).
                        Overrides the RHAII_API_KEY environment variable.
   --with-proxy         Also start the reasoning-hiding proxy.
@@ -67,9 +70,6 @@ Start options (combinable):
                        --with-proxy is given, otherwise directly to the backend.
   --smoke-test         After startup, send a test prompt to the backend and
                        fail (non-zero exit) if the model does not answer.
-
-Configuration is via environment variables (see the top of this script);
-MODEL selects the served model, e.g. MODEL=qwen3_14b ./inference-manage.sh start
 EOF
 }
 
@@ -208,6 +208,36 @@ cmd_start() {
     if model_is_cached "$resolved_model_id"; then HF_HUB_OFFLINE=1; else HF_HUB_OFFLINE=0; fi
   fi
 
+  # ----------------------------------------------------------
+  #  Settings summary
+  # ----------------------------------------------------------
+  local backend_label
+  if [ "${RHAII_UPSTREAM:-0}" = "1" ]; then
+    backend_label="Upstream vLLM"
+  else
+    backend_label="Red Hat AI Inference"
+  fi
+  local proxy_label
+  if [ "$with_proxy" -eq 1 ]; then proxy_label="enabled  (port $RHAII_PROXY_PORT)"; else proxy_label="disabled"; fi
+  local ui_label
+  if [ "$with_ui" -eq 1 ]; then ui_label="enabled  (https://${WEBUI_PUBLIC_HOST}:${WEBUI_PORT})"; else ui_label="disabled"; fi
+  local auth_label
+  if [ -n "$RHAII_API_KEY" ]; then auth_label="enabled"; else auth_label="open"; fi
+
+  echo "================================================================"
+  echo "  Inference Stack Settings"
+  echo "================================================================"
+  printf "  %-18s %s\n" "Backend:" "$backend_label"
+  printf "  %-18s %s (%s)\n" "Model:" "$MODEL" "$resolved_model_id"
+  printf "  %-18s %s\n" "Backend port:" "$RHAII_PORT"
+  printf "  %-18s %s\n" "Proxy:" "$proxy_label"
+  printf "  %-18s %s\n" "WebUI:" "$ui_label"
+  printf "  %-18s %s\n" "Cache dir:" "$RHAII_CACHE_DIR"
+  printf "  %-18s %s\n" "HF offline:" "$HF_HUB_OFFLINE"
+  printf "  %-18s %s\n" "Auth:" "$auth_label"
+  echo "================================================================"
+  echo
+
   # Common preflight
   require_cmd podman
   require_cmd curl
@@ -261,6 +291,21 @@ cmd_start() {
     fi
   fi
 
+  # Kill stale VLLM::EngineCore processes that survived previous container teardown.
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local stale_pids
+    stale_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d ' ')
+    if [ -n "$stale_pids" ]; then
+      for pid in $stale_pids; do
+        if ps -p "$pid" -o comm= 2>/dev/null | grep -q "VLLM::EngineCore"; then
+          echo "Killing stale VLLM::EngineCore (PID $pid) holding GPU memory..."
+          kill -9 "$pid" 2>/dev/null || sudo kill -9 "$pid" 2>/dev/null || true
+        fi
+      done
+      sleep 1
+    fi
+  fi
+
   # Auth arguments
   local curl_auth_args=()
   local rhaii_start_args=()
@@ -279,12 +324,10 @@ cmd_start() {
   mkdir -p "$ROOT_DIR/logs"
   : >"$RHAII_BACKEND_BOOT_LOG_FILE"
 
-  echo "Starting RHAII backend (MODEL=$MODEL)..."
-  echo "Resolved model id: $resolved_model_id"
-  echo "Cache dir: $RHAII_CACHE_DIR"
-  echo "HF_HUB_OFFLINE=$HF_HUB_OFFLINE"
+  echo "Starting $backend_label backend (MODEL=$MODEL)..."
   echo "Bootstrap log: $RHAII_BACKEND_BOOT_LOG_FILE"
   RHAII_FOLLOW_LOGS=0 \
+  RHAII_UPSTREAM="$RHAII_UPSTREAM" \
   RHAII_CACHE_DIR="$RHAII_CACHE_DIR" \
   HF_HUB_OFFLINE="$HF_HUB_OFFLINE" \
   MODEL_KEY="$launch_model_key" \
@@ -292,7 +335,7 @@ cmd_start() {
   "$RHAII_SCRIPT" "${rhaii_start_args[@]}" >"$RHAII_BACKEND_BOOT_LOG_FILE" 2>&1 </dev/null &
   local rhaii_start_pid=$!
 
-  echo "Waiting for RHAII API at http://127.0.0.1:$RHAII_PORT/v1/models ..."
+  echo "Waiting for $backend_label API at http://127.0.0.1:$RHAII_PORT/v1/models ..."
   local deadline=$((SECONDS + RHAII_WAIT_TIMEOUT_SEC))
   local ready=0
   local launcher_exited_early=0
@@ -317,7 +360,7 @@ cmd_start() {
   stop_startup_log_stream
 
   if [ "$ready" -ne 1 ]; then
-    echo "RHAII did not become ready within ${RHAII_WAIT_TIMEOUT_SEC}s." >&2
+    echo "$backend_label did not become ready within ${RHAII_WAIT_TIMEOUT_SEC}s." >&2
     if kill -0 "$rhaii_start_pid" >/dev/null 2>&1; then
       echo "Launcher process is still running (pid=$rhaii_start_pid)." >&2
     elif [ "$launcher_exited_early" -eq 1 ]; then
@@ -333,7 +376,7 @@ cmd_start() {
     exit 1
   fi
 
-  echo "RHAII is ready."
+  echo "$backend_label is ready."
 
   # Upstream the WebUI will talk to: the proxy if present, else the backend directly.
   local webui_upstream_port="$RHAII_PORT"
@@ -401,7 +444,7 @@ cmd_start() {
 
   echo
   echo "Stack is up."
-  echo "RHAII API: http://127.0.0.1:${RHAII_PORT}/v1"
+  echo "$backend_label API: http://127.0.0.1:${RHAII_PORT}/v1"
   [ "$with_proxy" -eq 1 ] && echo "Filtered API: http://127.0.0.1:${RHAII_PROXY_PORT}/v1"
   [ "$with_ui" -eq 1 ] && echo "WebUI URL: https://${WEBUI_PUBLIC_HOST}:${WEBUI_PORT}"
   echo "Model: ${MODEL}"
@@ -446,6 +489,18 @@ cmd="${1:-}"
 shift || true
 case "$cmd" in
   start)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      rhaii)   RHAII_UPSTREAM=0 ;;
+      upstream) RHAII_UPSTREAM=1 ;;
+      *)
+        echo "'start' requires a backend argument: 'rhaii' or 'upstream'" >&2
+        echo "Try: inference-manage.sh start rhaii [options]" >&2
+        usage
+        exit 1
+        ;;
+    esac
     with_proxy=0
     with_ui=0
     with_smoke=0

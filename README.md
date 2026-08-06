@@ -1,6 +1,6 @@
 # RHAII Inference Stack
 
-Local GPU-backed vLLM server (RHAII image) with an optional reasoning-hiding proxy and Open WebUI frontend, on Podman (RHEL-like hosts). 
+Local GPU-backed vLLM server (Red Hat AI Inference or upstream vLLM) with an optional reasoning-hiding proxy and Open WebUI frontend, on Podman (RHEL-like hosts).
 
 Jetson Orin variant: [`orin-vllm.sh`](orin-vllm.sh).
 
@@ -8,7 +8,7 @@ Jetson Orin variant: [`orin-vllm.sh`](orin-vllm.sh).
 
 Every script has a `CONFIGURATION — edit these` block at the top, above a `DO NOT EDIT BELOW THIS LINE` separator. Edit the plain values above the line; leave everything below it. Where noted, an environment variable of the same purpose still overrides the value at runtime.
 
-- [`inference-manage.sh`](inference-manage.sh) — model, ports, cache dir, WebUI host/port
+- [`inference-manage.sh`](inference-manage.sh) — model, backend (`UPSTREAM=0` for Red Hat / `1` for upstream), ports, cache dir, WebUI host/port
 - [`rhaii-universal.sh`](rhaii-universal.sh) — image, container, per-model quant/memory tuning
 - [`model-downloader.sh`](model-downloader.sh) — default model, cache dir, offline flag, token file
 - [`start-webui.sh`](start-webui.sh) — image, branding, host/port, cert dir, feature toggles
@@ -17,19 +17,20 @@ Every script has a `CONFIGURATION — edit these` block at the top, above a `DO 
 ## Start / Stop
 
 ```bash
-./inference-manage.sh start              # backend only (headless)
-./inference-manage.sh start --with-proxy # + reasoning-hiding proxy (filtered API on :8001)
-./inference-manage.sh start --with-ui    # + Open WebUI (and TLS proxy on :443)
-./inference-manage.sh start --bearer KEY # require "Authorization: Bearer KEY" on /v1/*
-./inference-manage.sh start --smoke-test # send a test prompt after boot; nonzero exit on failure
-./inference-manage.sh stop               # stop every running component
-./inference-manage.sh smoke-test         # probe an already-running backend
+./inference-manage.sh start rhaii              # Red Hat AI Inference backend (headless)
+./inference-manage.sh start upstream           # upstream vLLM backend (headless)
+./inference-manage.sh start rhaii --with-proxy # + reasoning-hiding proxy (filtered API on :8001)
+./inference-manage.sh start rhaii --with-ui    # + Open WebUI (and TLS proxy on :443)
+./inference-manage.sh start rhaii --bearer KEY # require "Authorization: Bearer KEY" on /v1/*
+./inference-manage.sh start rhaii --smoke-test # send a test prompt after boot; nonzero exit on failure
+./inference-manage.sh stop                     # stop every running component
+./inference-manage.sh smoke-test               # probe an already-running backend
 ```
 
-Flags combine. To change the model, edit `MODEL` at the top of the script. Lower-level launchers:
+Flags combine. Set `UPSTREAM=1` in the config block to default to upstream vLLM, or use `start upstream` for a one-off run. To change the model, edit `MODEL` at the top of the script. The settings table printed on startup summarizes the active configuration. Lower-level launchers:
 
 ```bash
-./rhaii-universal.sh [--api-key KEY]                    # run the backend directly
+./rhaii-universal.sh [--api-key KEY]                    # run the backend directly (env RHAII_UPSTREAM=1 for upstream)
 HF_HUB_OFFLINE=0 HF_TOKEN=hf_xxx ./model-downloader.sh  # cache a model only
 ```
 
