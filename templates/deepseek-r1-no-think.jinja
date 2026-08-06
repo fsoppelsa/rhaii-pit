@@ -1,0 +1,20 @@
+{%- if not add_generation_prompt is defined -%}
+  {%- set add_generation_prompt = false -%}
+{%- endif -%}
+{{- bos_token -}}
+{%- for message in messages -%}
+  {%- if message['role'] == 'system' -%}
+    {{- message['content'] -}}
+  {%- elif message['role'] == 'user' -%}
+    {{- '<｜User｜>' + message['content'] -}}
+  {%- elif message['role'] == 'assistant' -%}
+    {%- set content = message['content'] -%}
+    {%- if '</think>' in content -%}
+      {%- set content = content.split('</think>')[-1] -%}
+    {%- endif -%}
+    {{- '<｜Assistant｜>' + content + '<｜end▁of▁sentence｜>' -}}
+  {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+  {{- '<｜Assistant｜><think>\n' -}}
+{%- endif -%}
