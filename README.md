@@ -43,11 +43,34 @@ HF_HUB_OFFLINE=0 HF_TOKEN=hf_xxx ./model-downloader.sh  # cache a model only
 | `deepseek_r1_qwen_14b_awq` | `casperhansen/deepseek-r1-distill-qwen-14b-awq` |
 | `qwen3_4b` | `Qwen/Qwen3-4B-Instruct-2507` |
 | `qwen3_14b` | `RedHatAI/Qwen3-14B-quantized.w4a16` |
+| `qwen38_27b` | `Qwen/Qwen3.8-27B` (27B BF16; T4 needs CPU offload, upstream vLLM 0.27.1) |
+| `qwen38_27b_int4` | `RedHatAI/Qwen3.8-27B-INT4` (T4-tuned W4A16; upstream vLLM 0.27.1) |
 | `granite_8b` | `ibm-granite/granite-3.3-8b-instruct` |
 | `llama31_8b` | `meta-llama/Llama-3.1-8B-Instruct` |
 | `whiterabbit_7b_awq` | `solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ` |
 
 Per-model quantization and memory defaults live in `rhaii-universal.sh`.
+
+### Qwen3.8-27B INT4 on one Tesla T4
+
+`qwen38_27b_int4` defaults to the verified single-T4 profile: float16 compute, text-only mode, one sequence, 16,384-token context, grouped prefetch offload, native MTP speculative decoding, and fine-grained prefix caching. It requires a dedicated T4 because `GPU_MEMORY_UTILIZATION=0.99`.
+
+```bash
+MODEL_KEY=qwen38_27b_int4 RHAII_UPSTREAM=1 RHAII_FOLLOW_LOGS=0 \
+  ./rhaii-universal.sh
+```
+
+Pi/OMP exposes this server as `fedyagpt/qwen_27b`; the OpenAI API model id is `qwen_27b`.
+
+On the repository's 300-token benchmark (`bench.py`), the cache-warm profile measured 3.70 output tokens/s and 1.23 s TTFT. A 15,433-token retrieval prompt completed successfully in about three minutes. First startup can take several minutes while vLLM compiles kernels; later starts reuse the cache.
+
+To suppress thinking generation rather than only hide it after generation, OpenAI chat requests can include:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":false}}
+```
+
+The tuning variables remain overridable: `GPU_MEMORY_UTILIZATION`, `MAX_MODEL_LEN`, `MAX_NUM_BATCHED_TOKENS`, `MAX_NUM_SEQS`, `RHAII_LANGUAGE_MODEL_ONLY`, `RHAII_ENABLE_PREFIX_CACHING`, `RHAII_PREFIX_MATCH_UNIT`, `RHAII_OFFLOAD_GROUP_SIZE`, `RHAII_OFFLOAD_NUM_IN_GROUP`, `RHAII_OFFLOAD_PREFETCH_STEP`, and `RHAII_SPEC_CONFIG`.
 
 ## model-downloader.sh
 

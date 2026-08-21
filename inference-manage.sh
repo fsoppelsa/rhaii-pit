@@ -6,9 +6,10 @@ set -euo pipefail
 #  CONFIGURATION  —  edit these
 # ============================================================
 # MODEL: a catalog key (deepseek_r1_qwen_14b_awq, qwen3_4b, qwen3_14b,
-#        granite_8b, llama31_8b, whiterabbit_7b_awq) or a raw Hugging Face id.
-MODEL="deepseek_r1_qwen_14b_awq"
-UPSTREAM=0                       # 0 = Red Hat AI Inference, 1 = upstream vLLM
+#        qwen38_27b, qwen38_27b_int4, granite_8b, llama31_8b,
+#        whiterabbit_7b_awq) or a raw Hugging Face id.
+MODEL="qwen38_27b_int4"
+UPSTREAM=1                       # 0 = Red Hat AI Inference, 1 = upstream vLLM
 BACKEND_PORT=8000                # vLLM OpenAI API port
 PROXY_PORT=8001                  # reasoning-hiding proxy port
 CACHE_DIR="$HOME/rhaii-cache"    # Hugging Face model cache
@@ -45,7 +46,7 @@ RHAII_BACKEND_BOOT_LOG_FILE="$ROOT_DIR/logs/rhaii-backend-bootstrap.log"
 RHAII_STARTUP_LOG_STREAM=1
 
 # Backend readiness polling
-RHAII_WAIT_TIMEOUT_SEC=180
+RHAII_WAIT_TIMEOUT_SEC=900
 RHAII_WAIT_INTERVAL_SEC=3
 
 # ------------------------------
@@ -90,6 +91,8 @@ resolve_model_id() {
     deepseek_r1_qwen_14b_awq) echo "casperhansen/deepseek-r1-distill-qwen-14b-awq" ;;
     qwen3_4b)                 echo "Qwen/Qwen3-4B-Instruct-2507" ;;
     qwen3_14b)                echo "RedHatAI/Qwen3-14B-quantized.w4a16" ;;
+    qwen38_27b)               echo "Qwen/Qwen3.8-27B" ;;
+    qwen38_27b_int4)          echo "RedHatAI/Qwen3.8-27B-INT4" ;;
     granite_8b)               echo "ibm-granite/granite-3.3-8b-instruct" ;;
     llama31_8b)               echo "meta-llama/Llama-3.1-8B-Instruct" ;;
     whiterabbit_7b_awq)       echo "solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ" ;;
@@ -166,10 +169,10 @@ run_smoke_test() {
   fi
 
   local payload
-  payload="$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with a single short word."}],"max_tokens":16,"temperature":0}' "$model_name")"
+  payload="$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with a single short word."}],"max_tokens":16,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' "$model_name")"
 
   local resp
-  resp="$(curl -fsS --max-time 30 "${auth_args[@]}" -H 'Content-Type: application/json' -d "$payload" "${base}/chat/completions" 2>/dev/null || true)"
+  resp="$(curl -fsS --max-time 180 "${auth_args[@]}" -H 'Content-Type: application/json' -d "$payload" "${base}/chat/completions" 2>/dev/null || true)"
   if [ -z "$resp" ]; then
     echo "Smoke test FAILED: no response from ${base}/chat/completions" >&2
     return 1
@@ -203,6 +206,12 @@ cmd_start() {
   fi
   local resolved_model_id
   resolved_model_id="$(resolve_model_id "$MODEL")"
+
+  # Qwen3.8 needs vLLM 0.27.1+; the Red Hat EA image does not ship it.
+  if { [ "$launch_model_key" = "qwen38_27b" ] || [ "$launch_model_key" = "qwen38_27b_int4" ]; } && [ "${RHAII_UPSTREAM:-0}" != "1" ]; then
+    echo "qwen38_27b requires upstream vLLM; forcing RHAII_UPSTREAM=1."
+    RHAII_UPSTREAM=1
+  fi
 
   if [ -z "${HF_HUB_OFFLINE:-}" ]; then
     if model_is_cached "$resolved_model_id"; then HF_HUB_OFFLINE=1; else HF_HUB_OFFLINE=0; fi

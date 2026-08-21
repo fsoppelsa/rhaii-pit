@@ -55,6 +55,7 @@ MODEL_CHOICES_KEYS=(
   deepseek_r1_qwen_14b_awq
   qwen3_4b
   qwen3_14b
+  qwen38_27b_int4
   granite_8b
   llama31_8b
   whiterabbit_7b_awq
@@ -64,6 +65,7 @@ MODEL_CHOICES_VALUES=(
   "casperhansen/deepseek-r1-distill-qwen-14b-awq"
   "Qwen/Qwen3-4B-Instruct-2507"
   "RedHatAI/Qwen3-14B-quantized.w4a16"
+  "RedHatAI/Qwen3.8-27B-INT4"
   "ibm-granite/granite-3.3-8b-instruct"
   "meta-llama/Llama-3.1-8B-Instruct"
   "solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ"
@@ -93,7 +95,12 @@ if [ -z "$MODEL" ]; then
 fi
 
 if [ "${RHAII_UPSTREAM:-0}" = "1" ]; then
-  IMAGE="${RHAII_IMAGE:-docker.io/vllm/vllm-openai:latest}"
+  case "$MODEL_KEY" in
+    qwen38_27b|qwen38_27b_int4)
+      IMAGE="${RHAII_IMAGE:-docker.io/vllm/vllm-openai:v0.27.1}" ;;
+    *)
+      IMAGE="${RHAII_IMAGE:-docker.io/vllm/vllm-openai:latest}" ;;
+  esac
   CONTAINER_CACHE_PATH="/root/.cache"
 else
   IMAGE="${RHAII_IMAGE:-registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.2}"
@@ -114,8 +121,19 @@ MODEL_DOWNLOADER_SCRIPT="${RHAII_MODEL_DOWNLOADER_SCRIPT:-${RHAII_MODEL_DOWNLOAD
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 DTYPE="${VLLM_DTYPE:-half}"
+CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-}"
+RHAII_ENFORCE_EAGER="${RHAII_ENFORCE_EAGER:-}"
+RHAII_V2_RUNNER="${RHAII_V2_RUNNER:-}"
+RHAII_LANGUAGE_MODEL_ONLY="${RHAII_LANGUAGE_MODEL_ONLY:-}"
+RHAII_ENABLE_PREFIX_CACHING="${RHAII_ENABLE_PREFIX_CACHING:-}"
+RHAII_PREFIX_MATCH_UNIT="${RHAII_PREFIX_MATCH_UNIT:-}"
+RHAII_OFFLOAD_GROUP_SIZE="${RHAII_OFFLOAD_GROUP_SIZE:-}"
+RHAII_OFFLOAD_NUM_IN_GROUP="${RHAII_OFFLOAD_NUM_IN_GROUP:-1}"
+RHAII_OFFLOAD_PREFETCH_STEP="${RHAII_OFFLOAD_PREFETCH_STEP:-1}"
+RHAII_SPEC_CONFIG="${RHAII_SPEC_CONFIG:-}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-}"
 HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 RHAII_FOLLOW_LOGS="${RHAII_FOLLOW_LOGS:-${RHAII_FOLLOW_LOGS:-1}}"
@@ -128,10 +146,10 @@ if [ -z "$MODEL_QUANTIZATION" ]; then
     deepseek_r1_qwen_14b_awq)
       MODEL_QUANTIZATION="awq"
       ;;
-    qwen3_4b|granite_8b|llama31_8b)
+    qwen3_4b|granite_8b|llama31_8b|qwen38_27b)
       MODEL_QUANTIZATION=""
       ;;
-    qwen3_14b)
+    qwen3_14b|qwen38_27b_int4)
       MODEL_QUANTIZATION="compressed-tensors"
       ;;
     whiterabbit_7b_awq)
@@ -143,7 +161,6 @@ if [ -z "$MODEL_QUANTIZATION" ]; then
   esac
 fi
 
-if [ -z "$GPU_MEMORY_UTILIZATION" ] || [ -z "$MAX_MODEL_LEN" ] || [ -z "$MAX_NUM_SEQS" ]; then
   case "$MODEL_KEY" in
     deepseek_r1_qwen_14b_awq)
       GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
@@ -155,6 +172,39 @@ if [ -z "$GPU_MEMORY_UTILIZATION" ] || [ -z "$MAX_MODEL_LEN" ] || [ -z "$MAX_NUM
       GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
       MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
       MAX_NUM_SEQS="${MAX_NUM_SEQS:-2}"
+      ;;
+    qwen38_27b)
+      # 51.75 GiB FP16 on a 15 GiB T4. 42 GiB UVA offload leaves ~9 GiB weights
+      # on GPU; CUDA graphs stay on (eager off). Context kept short for KV.
+      GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.95}"
+      MAX_MODEL_LEN="${MAX_MODEL_LEN:-1024}"
+      MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
+      CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-42}"
+      DTYPE="${VLLM_DTYPE:-float16}"
+      SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen38_27b}"
+      RHAII_V2_RUNNER="${RHAII_V2_RUNNER:-0}"
+      ;;
+    qwen38_27b_int4)
+      # T4 profile: text-only W4A16 plus native MTP. Keeping 18 language
+      # modules resident and prefetching 46 leaves room for a 16k KV cache.
+      GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.99}"
+      DTYPE="${VLLM_DTYPE:-float16}"
+      MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+      MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-1024}"
+      MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
+      CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-0}"
+      SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen_27b}"
+      RHAII_V2_RUNNER="${RHAII_V2_RUNNER:-0}"
+      RHAII_LANGUAGE_MODEL_ONLY="${RHAII_LANGUAGE_MODEL_ONLY:-1}"
+      RHAII_ENABLE_PREFIX_CACHING="${RHAII_ENABLE_PREFIX_CACHING:-1}"
+      RHAII_PREFIX_MATCH_UNIT="${RHAII_PREFIX_MATCH_UNIT:-16}"
+      if [ -z "$RHAII_OFFLOAD_GROUP_SIZE" ]; then
+        RHAII_OFFLOAD_GROUP_SIZE=64
+        RHAII_OFFLOAD_NUM_IN_GROUP=46
+      fi
+      if [ -z "$RHAII_SPEC_CONFIG" ]; then
+        RHAII_SPEC_CONFIG='{"method":"mtp","num_speculative_tokens":4}'
+      fi
       ;;
     qwen3_4b)
       GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.92}"
@@ -172,7 +222,6 @@ if [ -z "$GPU_MEMORY_UTILIZATION" ] || [ -z "$MAX_MODEL_LEN" ] || [ -z "$MAX_NUM
       MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
       ;;
   esac
-fi
 
 VLLM_EXTRA_ARGS=()
 if [ -n "$API_KEY" ]; then
@@ -180,6 +229,35 @@ if [ -n "$API_KEY" ]; then
 fi
 if [ -n "$MODEL_QUANTIZATION" ]; then
   VLLM_EXTRA_ARGS+=(--quantization "$MODEL_QUANTIZATION")
+fi
+if [ -n "$CPU_OFFLOAD_GB" ]; then
+  VLLM_EXTRA_ARGS+=(--cpu-offload-gb "$CPU_OFFLOAD_GB")
+fi
+if [ -n "$MAX_NUM_BATCHED_TOKENS" ]; then
+  VLLM_EXTRA_ARGS+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
+fi
+if [ "$RHAII_LANGUAGE_MODEL_ONLY" = "1" ]; then
+  VLLM_EXTRA_ARGS+=(--language-model-only)
+fi
+if [ "$RHAII_ENABLE_PREFIX_CACHING" = "1" ]; then
+  VLLM_EXTRA_ARGS+=(--enable-prefix-caching)
+fi
+if [ -n "$RHAII_PREFIX_MATCH_UNIT" ]; then
+  VLLM_EXTRA_ARGS+=(--prefix-match-unit "$RHAII_PREFIX_MATCH_UNIT")
+fi
+if [ -n "$RHAII_OFFLOAD_GROUP_SIZE" ]; then
+  VLLM_EXTRA_ARGS+=(
+    --offload-backend prefetch
+    --offload-group-size "$RHAII_OFFLOAD_GROUP_SIZE"
+    --offload-num-in-group "$RHAII_OFFLOAD_NUM_IN_GROUP"
+    --offload-prefetch-step "$RHAII_OFFLOAD_PREFETCH_STEP"
+  )
+fi
+
+# Optional speculative decoding, e.g.
+#   RHAII_SPEC_CONFIG='{"method":"qwen3_5_mtp","num_speculative_tokens":2}'
+if [ -n "${RHAII_SPEC_CONFIG:-}" ]; then
+  VLLM_EXTRA_ARGS+=(--speculative-config "$RHAII_SPEC_CONFIG")
 fi
 VLLM_CHAT_TEMPLATE_ARGS=()
 CHAT_TEMPLATE_HOST_PATH="$CACHE_DIR/chat_template.jinja"
@@ -204,7 +282,30 @@ case "$MODEL_KEY" in
     )
     VLLM_CHAT_TEMPLATE_ARGS=()
     ;;
+  qwen38_27b)
+    VLLM_EXTRA_ARGS+=(
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --trust-remote-code
+    )
+    VLLM_CHAT_TEMPLATE_ARGS=()
+    ;;
+  qwen38_27b_int4)
+    VLLM_EXTRA_ARGS+=(
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --trust-remote-code
+    )
+    VLLM_CHAT_TEMPLATE_ARGS=()
+    ;;
 esac
+
+ENFORCE_EAGER_ARGS=()
+if [ "${RHAII_ENFORCE_EAGER:-}" = "1" ]; then
+  ENFORCE_EAGER_ARGS+=(--enforce-eager)
+fi
 
 if ! command -v podman >/dev/null 2>&1; then
   echo "podman is required but not found" >&2
@@ -286,6 +387,7 @@ podman run -d --rm \
   --env "HF_HUB_OFFLINE=$RUNTIME_HF_HUB_OFFLINE" \
   --env "VLLM_NO_USAGE_STATS=1" \
   --env "PYTORCH_ALLOC_CONF=expandable_segments:True" \
+  --env "VLLM_USE_V2_MODEL_RUNNER=${RHAII_V2_RUNNER:-1}" \
   -v "$CACHE_DIR:$CONTAINER_CACHE_PATH:Z" \
   "$IMAGE" \
   "${MODEL_ARGS[@]}" \
@@ -299,7 +401,7 @@ podman run -d --rm \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_NUM_SEQS" \
-  --enforce-eager >/dev/null
+  ${ENFORCE_EAGER_ARGS[@]+"${ENFORCE_EAGER_ARGS[@]}"} >/dev/null
 
 if [ "$RHAII_FOLLOW_LOGS" = "1" ]; then
   echo "Container is running. Press Ctrl+C to stop following logs; container will keep running."

@@ -9,7 +9,7 @@ fi
 # ============================================================
 #  CONFIGURATION  —  edit these
 # ============================================================
-DEFAULT_MODEL_KEY="deepseek_r1_qwen_14b_awq"   # default model key (env MODEL_KEY/MODEL override)
+DEFAULT_MODEL_KEY="qwen38_27b_int4"            # default model key (env MODEL_KEY/MODEL override)
 CACHE_DIR="$HOME/rhaii-cache"                  # Hugging Face model cache
 OFFLINE=1                                      # 1 = require local model, 0 = allow download
 TOKEN_FILE="$HOME/HF_TOKEN"                    # token file used when downloading
@@ -47,6 +47,8 @@ MODEL_CHOICES_KEYS=(
   deepseek_r1_qwen_14b_awq
   qwen3_4b
   qwen3_14b
+  qwen38_27b
+  qwen38_27b_int4
   granite_8b
   llama31_8b
   whiterabbit_7b_awq
@@ -56,6 +58,8 @@ MODEL_CHOICES_VALUES=(
   "casperhansen/deepseek-r1-distill-qwen-14b-awq"
   "Qwen/Qwen3-4B-Instruct-2507"
   "RedHatAI/Qwen3-14B-quantized.w4a16"
+  "Qwen/Qwen3.8-27B"
+  "RedHatAI/Qwen3.8-27B-INT4"
   "ibm-granite/granite-3.3-8b-instruct"
   "meta-llama/Llama-3.1-8B-Instruct"
   "solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ"
@@ -111,7 +115,12 @@ CACHE_KEY="${MODEL//\//--}"
 SNAPSHOT_DIR="$CACHE_HUB_DIR/models--${CACHE_KEY}/snapshots"
 
 model_is_cached() {
-  [ -d "$SNAPSHOT_DIR" ] && find "$SNAPSHOT_DIR" -mindepth 1 -maxdepth 1 -type d | grep -q .
+  # A snapshot dir alone is not enough: a killed download leaves metadata
+  # files and a stray .incomplete blob behind. Require at least one weight
+  # file in the snapshot.
+  [ -d "$SNAPSHOT_DIR" ] \
+    && find "$SNAPSHOT_DIR" -mindepth 2 -maxdepth 2 -xtype f \
+      \( -name '*.safetensors' -o -name '*.bin' -o -name '*.gguf' \) -print -quit | grep -q .
 }
 
 mkdir -p "$CACHE_HUB_DIR"
