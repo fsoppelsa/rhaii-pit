@@ -1,3 +1,4 @@
+.omp/
 logs/
 __pycache__/
 *.log.gz
