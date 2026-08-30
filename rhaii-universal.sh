@@ -169,9 +169,11 @@ fi
       SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-fedyagpt_14b}"
       ;;
     qwen3_14b)
-      GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
+      # Pi's repository instructions exceed an 8k context. A single 16k request
+      # fits on the T4 when KV cache is prioritized over concurrent sequences.
+      GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.95}"
       MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
-      MAX_NUM_SEQS="${MAX_NUM_SEQS:-2}"
+      MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
       ;;
     qwen38_27b)
       # 51.75 GiB FP16 on a 15 GiB T4. 42 GiB UVA offload leaves ~9 GiB weights
@@ -222,6 +224,11 @@ fi
       MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
       ;;
   esac
+
+SERVED_MODEL_ARGS=()
+if [ -n "$SERVED_MODEL_NAME" ]; then
+  SERVED_MODEL_ARGS=(--served-model-name "$SERVED_MODEL_NAME")
+fi
 
 VLLM_EXTRA_ARGS=()
 if [ -n "$API_KEY" ]; then
@@ -391,7 +398,7 @@ podman run -d --rm \
   -v "$CACHE_DIR:$CONTAINER_CACHE_PATH:Z" \
   "$IMAGE" \
   "${MODEL_ARGS[@]}" \
-  --served-model-name "$SERVED_MODEL_NAME" \
+  "${SERVED_MODEL_ARGS[@]}" \
   --host 0.0.0.0 \
   --port 8000 \
   --dtype "$DTYPE" \

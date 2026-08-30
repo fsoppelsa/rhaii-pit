@@ -1,0 +1,12 @@
+ARG LM_EVAL_BASE_IMAGE=registry.access.redhat.com/ubi9/python-312
+ARG LM_EVAL_VERSION=0.4.8
+ARG TORCH_VERSION=2.6.0+cpu
+FROM ${LM_EVAL_BASE_IMAGE}
+
+ARG LM_EVAL_VERSION
+ARG TORCH_VERSION
+USER 0
+RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" \
+    && python -m pip install --no-cache-dir "lm_eval[api]==${LM_EVAL_VERSION}" "transformers==4.48.3"
+USER 1001
+ENTRYPOINT ["lm_eval"]

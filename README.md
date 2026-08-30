@@ -13,6 +13,7 @@ Every script has a `CONFIGURATION — edit these` block at the top, above a `DO 
 - [`model-downloader.sh`](model-downloader.sh) — default model, cache dir, offline flag, token file
 - [`start-webui.sh`](start-webui.sh) — image, branding, host/port, cert dir, feature toggles
 - [`orin-vllm.sh`](orin-vllm.sh) — Jetson model, container, memory tuning
+- [`tools/benchmark.sh`](tools/benchmark.sh) — containerized performance and quality benchmarks
 
 ## Start / Stop
 
@@ -27,12 +28,45 @@ Every script has a `CONFIGURATION — edit these` block at the top, above a `DO 
 ./inference-manage.sh smoke-test               # probe an already-running backend
 ```
 
+
+When starting a backend, `inference-manage.sh` prints the resolved model
+runtime parameters before launch, including context window, batching limits,
+sequence concurrency, memory utilization, dtype, quantization, and optional
+offload or speculative-decoding settings. Values supplied through environment
+variables are reflected in the summary.
 Flags combine. Set `UPSTREAM=1` in the config block to default to upstream vLLM, or use `start upstream` for a one-off run. To change the model, edit `MODEL` at the top of the script. The settings table printed on startup summarizes the active configuration. Lower-level launchers:
 
 ```bash
 ./rhaii-universal.sh [--api-key KEY]                    # run the backend directly (env RHAII_UPSTREAM=1 for upstream)
 HF_HUB_OFFLINE=0 HF_TOKEN=hf_xxx ./model-downloader.sh  # cache a model only
 ```
+
+## Benchmarking
+
+Install the benchmark images once, then benchmark the local backend or a remote
+server. `--url` accepts a full HTTP(S) origin or a bare IP address; a bare IP
+uses port `8000`.
+
+```bash
+./tools/benchmark.sh install
+./tools/benchmark.sh benchmark                         # http://127.0.0.1:8000
+./tools/benchmark.sh benchmark --url 192.0.2.10       # http://192.0.2.10:8000
+./tools/benchmark.sh quality --url https://api.example.com --model <served-model-name>
+```
+
+Set `BENCHMARK_API_KEY` when the remote server requires bearer authentication.
+The `quality` command runs the TrustyAI LM-Eval-compatible `lm_eval` harness
+in a Podman container based on Red Hat UBI 9. Its default deterministic suite
+is HellaSwag, ARC-Challenge, GSM8K, and MMLU; the server must support
+completion logprobs. Override tasks with `BENCHMARK_QUALITY_TASKS`, or use
+`BENCHMARK_QUALITY_LIMIT` to cap examples per task for a smoke test.
+
+Performance results persist on the host in `logs/benchmarks` by default
+with datetime-stamped names such as `benchmarks-20260830-143012.csv` and
+`benchmarks-20260830-143012.json`. Quality results persist in
+timestamped directories below `logs/benchmarks/quality`. Set
+`BENCHMARK_RESULTS_DIR` to use another host directory; it is mounted into
+each benchmark container at `/results`.
 
 ## Models
 

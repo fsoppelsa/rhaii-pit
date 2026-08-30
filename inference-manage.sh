@@ -8,8 +8,8 @@ set -euo pipefail
 # MODEL: a catalog key (deepseek_r1_qwen_14b_awq, qwen3_4b, qwen3_14b,
 #        qwen38_27b, qwen38_27b_int4, granite_8b, llama31_8b,
 #        whiterabbit_7b_awq) or a raw Hugging Face id.
-MODEL="qwen38_27b_int4"
-UPSTREAM=1                       # 0 = Red Hat AI Inference, 1 = upstream vLLM
+MODEL="qwen3_14b"
+UPSTREAM=0                       # 0 = Red Hat AI Inference, 1 = upstream vLLM
 BACKEND_PORT=8000                # vLLM OpenAI API port
 PROXY_PORT=8001                  # reasoning-hiding proxy port
 CACHE_DIR="$HOME/rhaii-cache"    # Hugging Face model cache
@@ -106,6 +106,30 @@ model_is_cached() {
   local snapshot_dir="${RHAII_CACHE_DIR}/huggingface/hub/models--${cache_key}/snapshots"
   [ -d "$snapshot_dir" ] && find "$snapshot_dir" -mindepth 1 -maxdepth 1 -type d | grep -q .
 }
+check_for_update() {
+  local local_revision branch remote_revision
+
+  command -v git >/dev/null 2>&1 || return 0
+  local_revision="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  branch="$(git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [ -n "$local_revision" ] && [ -n "$branch" ] || return 0
+
+  remote_revision="$(
+    git -C "$ROOT_DIR" \
+      -c http.connectTimeout=2 \
+      -c http.lowSpeedLimit=1 \
+      -c http.lowSpeedTime=2 \
+      ls-remote --heads origin "refs/heads/$branch" 2>/dev/null |
+      cut -f1
+  )"
+  [ -n "$remote_revision" ] || return 0
+
+  if [ "$remote_revision" != "$local_revision" ] &&
+    git -C "$ROOT_DIR" merge-base --is-ancestor "$local_revision" "$remote_revision"; then
+    printf '\033[31mUpdate available for rhaii-pit. Run git pull before the next startup.\033[0m\n'
+  fi
+}
+
 
 stop_startup_log_stream() {
   if [ -n "${RHAII_LOG_STREAM_PID:-}" ] && kill -0 "$RHAII_LOG_STREAM_PID" >/dev/null 2>&1; then
@@ -217,6 +241,101 @@ cmd_start() {
     if model_is_cached "$resolved_model_id"; then HF_HUB_OFFLINE=1; else HF_HUB_OFFLINE=0; fi
   fi
 
+  # Mirror the launcher defaults so the summary describes the effective
+  # parameters before the backend process starts. Explicit environment values
+  # remain authoritative.
+  local model_gpu_memory_utilization="${GPU_MEMORY_UTILIZATION:-}"
+  local model_max_model_len="${MAX_MODEL_LEN:-}"
+  local model_max_num_batched_tokens="${MAX_NUM_BATCHED_TOKENS:-}"
+  local model_max_num_seqs="${MAX_NUM_SEQS:-}"
+  local model_tensor_parallel_size="${TENSOR_PARALLEL_SIZE:-1}"
+  local model_dtype="${VLLM_DTYPE:-half}"
+  local model_cpu_offload_gb="${CPU_OFFLOAD_GB:-}"
+  local model_quantization="${MODEL_QUANTIZATION:-}"
+  local model_served_name="${SERVED_MODEL_NAME:-}"
+  local model_prefix_caching="${RHAII_ENABLE_PREFIX_CACHING:-}"
+  local model_language_only="${RHAII_LANGUAGE_MODEL_ONLY:-}"
+  local model_prefix_match_unit="${RHAII_PREFIX_MATCH_UNIT:-}"
+  local model_offload_group_size="${RHAII_OFFLOAD_GROUP_SIZE:-}"
+  local model_offload_num_in_group="${RHAII_OFFLOAD_NUM_IN_GROUP:-1}"
+  local model_offload_prefetch_step="${RHAII_OFFLOAD_PREFETCH_STEP:-1}"
+  local model_speculative_config="${RHAII_SPEC_CONFIG:-}"
+
+  case "$launch_model_key" in
+    deepseek_r1_qwen_14b_awq)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.90}"
+      model_max_model_len="${model_max_model_len:-16384}"
+      model_max_num_seqs="${model_max_num_seqs:-1}"
+      model_quantization="${model_quantization:-awq}"
+      model_served_name="${model_served_name:-fedyagpt_14b}"
+      ;;
+    qwen3_14b)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.85}"
+      model_max_model_len="${model_max_model_len:-8192}"
+      model_max_num_seqs="${model_max_num_seqs:-2}"
+      model_quantization="${model_quantization:-compressed-tensors}"
+      ;;
+    qwen38_27b)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.95}"
+      model_max_model_len="${model_max_model_len:-1024}"
+      model_max_num_seqs="${model_max_num_seqs:-1}"
+      model_cpu_offload_gb="${model_cpu_offload_gb:-42}"
+      model_dtype="${model_dtype:-float16}"
+      model_served_name="${model_served_name:-qwen38_27b}"
+      ;;
+    qwen38_27b_int4)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.99}"
+      model_max_model_len="${model_max_model_len:-16384}"
+      model_max_num_batched_tokens="${model_max_num_batched_tokens:-1024}"
+      model_max_num_seqs="${model_max_num_seqs:-1}"
+      model_cpu_offload_gb="${model_cpu_offload_gb:-0}"
+      model_dtype="${model_dtype:-float16}"
+      model_quantization="${model_quantization:-compressed-tensors}"
+      model_served_name="${model_served_name:-qwen_27b}"
+      model_language_only="${model_language_only:-1}"
+      model_prefix_caching="${model_prefix_caching:-1}"
+      model_prefix_match_unit="${model_prefix_match_unit:-16}"
+      if [ -z "$model_offload_group_size" ]; then
+        model_offload_group_size=64
+        model_offload_num_in_group=46
+      fi
+      if [ -z "$model_speculative_config" ]; then
+        model_speculative_config='{"method":"mtp","num_speculative_tokens":4}'
+      fi
+      ;;
+    qwen3_4b)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.92}"
+      model_max_model_len="${model_max_model_len:-1024}"
+      model_max_num_seqs="${model_max_num_seqs:-16}"
+      ;;
+    whiterabbit_7b_awq)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.92}"
+      model_max_model_len="${model_max_model_len:-1024}"
+      model_max_num_seqs="${model_max_num_seqs:-16}"
+      model_quantization="${model_quantization:-awq}"
+      ;;
+    *)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.92}"
+      model_max_model_len="${model_max_model_len:-1024}"
+      model_max_num_seqs="${model_max_num_seqs:-16}"
+      ;;
+  esac
+
+  local model_served_name_display="${model_served_name:-$resolved_model_id}"
+  local model_max_num_batched_tokens_display="${model_max_num_batched_tokens:-engine default}"
+  local model_cpu_offload_display="${model_cpu_offload_gb:-disabled}"
+  local model_quantization_display="${model_quantization:-none}"
+  local model_prefix_caching_display="disabled"
+  [ "$model_prefix_caching" = "1" ] && model_prefix_caching_display="enabled"
+
+  local model_language_only_display="disabled"
+  [ "$model_language_only" = "1" ] && model_language_only_display="enabled"
+  local model_speculative_display="${model_speculative_config:-disabled}"
+  local model_offload_display="disabled"
+  if [ -n "$model_offload_group_size" ]; then
+    model_offload_display="group=$model_offload_group_size,num=$model_offload_num_in_group,step=$model_offload_prefetch_step"
+  fi
+
   # ----------------------------------------------------------
   #  Settings summary
   # ----------------------------------------------------------
@@ -233,6 +352,7 @@ cmd_start() {
   local auth_label
   if [ -n "$RHAII_API_KEY" ]; then auth_label="enabled"; else auth_label="open"; fi
 
+  check_for_update
   echo "================================================================"
   echo "  Inference Stack Settings"
   echo "================================================================"
@@ -244,6 +364,23 @@ cmd_start() {
   printf "  %-18s %s\n" "Cache dir:" "$RHAII_CACHE_DIR"
   printf "  %-18s %s\n" "HF offline:" "$HF_HUB_OFFLINE"
   printf "  %-18s %s\n" "Auth:" "$auth_label"
+  echo
+  echo "  Model Runtime Parameters"
+  printf "  %-30s %s\n" "Parameter" "Value"
+  printf "  %-30s %s tokens\n" "Context window:" "$model_max_model_len"
+  printf "  %-30s %s\n" "Max batched tokens:" "$model_max_num_batched_tokens_display"
+  printf "  %-30s %s\n" "Max sequences:" "$model_max_num_seqs"
+  printf "  %-30s %s\n" "GPU memory utilization:" "$model_gpu_memory_utilization"
+  printf "  %-30s %s\n" "CPU offload:" "$model_cpu_offload_display"
+  printf "  %-30s %s\n" "Tensor parallel size:" "$model_tensor_parallel_size"
+  printf "  %-30s %s\n" "Dtype:" "$model_dtype"
+  printf "  %-30s %s\n" "Quantization:" "$model_quantization_display"
+  printf "  %-30s %s\n" "Served model name:" "$model_served_name_display"
+  printf "  %-30s %s\n" "Language-model-only:" "$model_language_only_display"
+  printf "  %-30s %s\n" "Prefix caching:" "$model_prefix_caching_display"
+  printf "  %-30s %s\n" "Prefix match unit:" "${model_prefix_match_unit:-engine default}"
+  printf "  %-30s %s\n" "Offload prefetch:" "$model_offload_display"
+  printf "  %-30s %s\n" "Speculative decoding:" "$model_speculative_display"
   echo "================================================================"
   echo
 
