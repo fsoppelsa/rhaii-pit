@@ -2,21 +2,21 @@
 
 set -euo pipefail
 
-# ============================================================
-#  CONFIGURATION  —  edit these
-# ============================================================
+# Configuration
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PODMAN="${PODMAN:-podman}"
-GUIDELLM_IMAGE="${GUIDELLM_IMAGE:-ghcr.io/vllm-project/guidellm:stable}"
-LM_EVAL_IMAGE="${LM_EVAL_IMAGE:-localhost/rhaii-lm-eval:latest}"
-LM_EVAL_BASE_IMAGE="${LM_EVAL_BASE_IMAGE:-registry.access.redhat.com/ubi9/python-312}"
-LM_EVAL_VERSION="${LM_EVAL_VERSION:-0.4.8}"
-BENCHMARK_RESULTS_DIR="${BENCHMARK_RESULTS_DIR:-$ROOT_DIR/../logs/benchmarks}"
-BENCHMARK_CACHE_DIR="${BENCHMARK_CACHE_DIR:-$HOME/rhaii-cache}"
-
-# ============================================================
-#  DO NOT EDIT BELOW THIS LINE
-# ============================================================
+PODMAN="podman"
+GUIDELLM_IMAGE="ghcr.io/vllm-project/guidellm:stable"
+LM_EVAL_IMAGE="localhost/rhaii-lm-eval:latest"
+LM_EVAL_BASE_IMAGE="registry.access.redhat.com/ubi9/python-312"
+LM_EVAL_VERSION="0.4.8"
+BENCHMARK_RESULTS_DIR="$ROOT_DIR/../logs/benchmarks"
+BENCHMARK_CACHE_DIR="$HOME/rhaii-cache"
+BENCHMARK_ENDPOINT="http://127.0.0.1:8000"
+BENCHMARK_MODEL="RedHatAI/Qwen3-14B-quantized.w4a16"
+BENCHMARK_TOKENIZER="RedHatAI/Qwen3-14B-quantized.w4a16"
+BENCHMARK_QUALITY_TASKS="hellaswag,arc_challenge,gsm8k,mmlu"
+BENCHMARK_QUALITY_LIMIT=""
+BENCHMARK_API_KEY=""
 
 usage() {
   cat <<EOF
@@ -34,7 +34,7 @@ Benchmark options:
   --model NAME  Served model name (default: RedHatAI/Qwen3-14B-quantized.w4a16).
   -h, --help    Show this help text.
 
-Configuration variables:
+Configuration values (edit near the top of this script):
   PODMAN                 Podman executable (default: podman)
   GUIDELLM_IMAGE         GuideLLM image (default: ghcr.io/vllm-project/guidellm:stable)
   LM_EVAL_IMAGE          Locally built TrustyAI-compatible LM Eval image
@@ -107,8 +107,6 @@ normalize_endpoint() {
 }
 
 parse_benchmark_options() {
-  BENCHMARK_ENDPOINT="${BENCHMARK_ENDPOINT:-http://127.0.0.1:8000}"
-  BENCHMARK_MODEL="${BENCHMARK_MODEL:-RedHatAI/Qwen3-14B-quantized.w4a16}"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -141,7 +139,7 @@ run_performance() {
   parse_benchmark_options "$@"
   require_podman
 
-  local tokenizer="${BENCHMARK_TOKENIZER:-RedHatAI/Qwen3-14B-quantized.w4a16}"
+  local tokenizer="$BENCHMARK_TOKENIZER"
   local run_timestamp
   run_timestamp="$(date '+%Y%m%d-%H%M%S')"
   mkdir -p "$BENCHMARK_CACHE_DIR"
@@ -178,14 +176,14 @@ run_quality() {
   parse_benchmark_options "$@"
   require_podman
 
-  local tokenizer="${BENCHMARK_TOKENIZER:-RedHatAI/Qwen3-14B-quantized.w4a16}"
-  local quality_tasks="${BENCHMARK_QUALITY_TASKS:-hellaswag,arc_challenge,gsm8k,mmlu}"
-  local quality_limit="${BENCHMARK_QUALITY_LIMIT:-}"
+  local tokenizer="$BENCHMARK_TOKENIZER"
+  local quality_tasks="$BENCHMARK_QUALITY_TASKS"
+  local quality_limit="$BENCHMARK_QUALITY_LIMIT"
   local run_timestamp
   run_timestamp="$(date '+%Y%m%d-%H%M%S')"
   local quality_output_dir="/results/quality/quality-${run_timestamp}"
   local model_args="model=$BENCHMARK_MODEL,base_url=$BENCHMARK_ENDPOINT/v1/completions,tokenizer=$tokenizer"
-  if [ -n "${BENCHMARK_API_KEY:-}" ]; then
+  if [ -n "$BENCHMARK_API_KEY" ]; then
     model_args+=",auth_token=$BENCHMARK_API_KEY"
   fi
   local quality_args=(
