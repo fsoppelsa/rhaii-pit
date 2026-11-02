@@ -47,11 +47,12 @@ done
 # Model selection
 # ------------------------------
 # Pick one key via MODEL_KEY, or set MODEL directly to override everything.
-# Default: a locally cached Qwen3-14B quantized model that fits on a Tesla T4.
-# Example: MODEL_KEY=qwen3_14b ./rhaii-universal.sh
+# Default: Red Hat's Mistral 7B GPTQ 4-bit model, suitable for a Tesla T4.
+# Example: MODEL_KEY=mistral_7b_gptq_4bit ./rhaii-universal.sh
 # Example: MODEL=meta-llama/Llama-3.1-8B-Instruct ./rhaii-universal.sh
 
 MODEL_CHOICES_KEYS=(
+  mistral_7b_gptq_4bit
   deepseek_r1_qwen_14b_awq
   qwen3_4b
   qwen3_14b
@@ -62,6 +63,7 @@ MODEL_CHOICES_KEYS=(
 )
 
 MODEL_CHOICES_VALUES=(
+  "RedHatAI/Mistral-7B-Instruct-v0.3-GPTQ-4bit"
   "casperhansen/deepseek-r1-distill-qwen-14b-awq"
   "Qwen/Qwen3-4B-Instruct-2507"
   "RedHatAI/Qwen3-14B-quantized.w4a16"
@@ -71,7 +73,7 @@ MODEL_CHOICES_VALUES=(
   "solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ"
 )
 
-MODEL_KEY="${MODEL_KEY:-qwen3_14b}"
+MODEL_KEY="${MODEL_KEY:-mistral_7b_gptq_4bit}"
 MODEL="${MODEL:-}"
 
 if [ -z "$MODEL" ]; then
@@ -143,6 +145,9 @@ LOG_FILE="$LOG_DIR/${CONTAINER_NAME}-${MODEL_KEY}-${RUN_ID}.log"
 MODEL_QUANTIZATION="${MODEL_QUANTIZATION:-}"
 if [ -z "$MODEL_QUANTIZATION" ]; then
   case "$MODEL_KEY" in
+    mistral_7b_gptq_4bit)
+      MODEL_QUANTIZATION="gptq_marlin"
+      ;;
     deepseek_r1_qwen_14b_awq)
       MODEL_QUANTIZATION="awq"
       ;;
@@ -162,6 +167,12 @@ if [ -z "$MODEL_QUANTIZATION" ]; then
 fi
 
   case "$MODEL_KEY" in
+    mistral_7b_gptq_4bit)
+      GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.92}"
+      MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+      MAX_NUM_SEQS="${MAX_NUM_SEQS:-2}"
+      SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-mistral7b}"
+      ;;
     deepseek_r1_qwen_14b_awq)
       GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
       MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
@@ -309,6 +320,34 @@ case "$MODEL_KEY" in
     ;;
 esac
 
+VLLM_CUSTOM_ARGS=()
+if [ -n "${RHAII_VLLM_CONFIG:-}" ]; then
+  if [ ! -r "$RHAII_VLLM_CONFIG" ]; then
+    echo "Custom vLLM config is not readable: $RHAII_VLLM_CONFIG" >&2
+    exit 1
+  fi
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [ -z "$line" ] && continue
+    [[ "$line" = \#* ]] && continue
+    case "$line" in
+      --host|--host=*|--port|--port=*|--model|--model=*|--api-key|--api-key=*)
+        echo "Custom vLLM config cannot override launcher-managed option: $line" >&2
+        exit 1
+        ;;
+      --*)
+        VLLM_CUSTOM_ARGS+=("$line")
+        ;;
+      *)
+        echo "Invalid custom vLLM config line: $line" >&2
+        echo "Each non-comment line must be one --option or --option=value argument." >&2
+        exit 1
+        ;;
+    esac
+  done < "$RHAII_VLLM_CONFIG"
+fi
+
 ENFORCE_EAGER_ARGS=()
 if [ "${RHAII_ENFORCE_EAGER:-}" = "1" ]; then
   ENFORCE_EAGER_ARGS+=(--enforce-eager)
@@ -408,7 +447,8 @@ podman run -d --rm \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_NUM_SEQS" \
-  ${ENFORCE_EAGER_ARGS[@]+"${ENFORCE_EAGER_ARGS[@]}"} >/dev/null
+  ${ENFORCE_EAGER_ARGS[@]+"${ENFORCE_EAGER_ARGS[@]}"} \
+  "${VLLM_CUSTOM_ARGS[@]}" >/dev/null
 
 if [ "$RHAII_FOLLOW_LOGS" = "1" ]; then
   echo "Container is running. Press Ctrl+C to stop following logs; container will keep running."

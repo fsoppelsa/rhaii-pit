@@ -9,7 +9,7 @@ fi
 # ============================================================
 #  CONFIGURATION  —  edit these
 # ============================================================
-DEFAULT_MODEL_KEY="qwen38_27b_int4"            # default model key (env MODEL_KEY/MODEL override)
+DEFAULT_MODEL_KEY="mistral_7b_gptq_4bit"       # default model key (env MODEL_KEY/MODEL override)
 CACHE_DIR="$HOME/rhaii-cache"                  # Hugging Face model cache
 OFFLINE=1                                      # 1 = require local model, 0 = allow download
 TOKEN_FILE="$HOME/HF_TOKEN"                    # token file used when downloading
@@ -44,6 +44,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 fi
 
 MODEL_CHOICES_KEYS=(
+  mistral_7b_gptq_4bit
   deepseek_r1_qwen_14b_awq
   qwen3_4b
   qwen3_14b
@@ -55,6 +56,7 @@ MODEL_CHOICES_KEYS=(
 )
 
 MODEL_CHOICES_VALUES=(
+  "RedHatAI/Mistral-7B-Instruct-v0.3-GPTQ-4bit"
   "casperhansen/deepseek-r1-distill-qwen-14b-awq"
   "Qwen/Qwen3-4B-Instruct-2507"
   "RedHatAI/Qwen3-14B-quantized.w4a16"

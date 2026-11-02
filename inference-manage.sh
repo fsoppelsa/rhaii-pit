@@ -5,10 +5,10 @@ set -euo pipefail
 # ============================================================
 #  CONFIGURATION  —  edit these
 # ============================================================
-# MODEL: a catalog key (deepseek_r1_qwen_14b_awq, qwen3_4b, qwen3_14b,
-#        qwen38_27b, qwen38_27b_int4, granite_8b, llama31_8b,
-#        whiterabbit_7b_awq) or a raw Hugging Face id.
-MODEL="qwen3_14b"
+# MODEL: a catalog key (mistral_7b_gptq_4bit, deepseek_r1_qwen_14b_awq,
+#        qwen3_4b, qwen3_14b, qwen38_27b, qwen38_27b_int4, granite_8b,
+#        llama31_8b, whiterabbit_7b_awq) or a raw Hugging Face id.
+MODEL="mistral_7b_gptq_4bit"
 UPSTREAM=0                       # 0 = Red Hat AI Inference, 1 = upstream vLLM
 BACKEND_PORT=8000                # vLLM OpenAI API port
 PROXY_PORT=8001                  # reasoning-hiding proxy port
@@ -66,11 +66,21 @@ Commands:
 Start options (combinable with 'start rhaii' or 'start upstream'):
   --bearer <key>       Require this Bearer token on the API (enables vLLM auth).
                        Overrides the RHAII_API_KEY environment variable.
+  --custom-config <file>
+                       Read extra vLLM arguments from <file>: one complete
+                       argument per non-empty line. Blank lines and lines
+                       beginning with '#' are ignored. Use --option=value for
+                       options with values. These arguments follow RHAII's
+                       defaults and therefore override duplicate vLLM options.
   --with-proxy         Also start the reasoning-hiding proxy.
   --with-ui            Also start Open WebUI. It talks to the proxy when
                        --with-proxy is given, otherwise directly to the backend.
   --smoke-test         After startup, send a test prompt to the backend and
                        fail (non-zero exit) if the model does not answer.
+
+Shorthand:
+  --custom-config <file>
+                       Equivalent to 'start rhaii --custom-config <file>'.
 EOF
 }
 
@@ -88,15 +98,16 @@ container_running() {
 
 resolve_model_id() {
   case "$1" in
-    deepseek_r1_qwen_14b_awq) echo "casperhansen/deepseek-r1-distill-qwen-14b-awq" ;;
-    qwen3_4b)                 echo "Qwen/Qwen3-4B-Instruct-2507" ;;
-    qwen3_14b)                echo "RedHatAI/Qwen3-14B-quantized.w4a16" ;;
-    qwen38_27b)               echo "Qwen/Qwen3.8-27B" ;;
-    qwen38_27b_int4)          echo "RedHatAI/Qwen3.8-27B-INT4" ;;
-    granite_8b)               echo "ibm-granite/granite-3.3-8b-instruct" ;;
-    llama31_8b)               echo "meta-llama/Llama-3.1-8B-Instruct" ;;
-    whiterabbit_7b_awq)       echo "solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ" ;;
-    *)                        echo "$1" ;;
+    mistral_7b_gptq_4bit)        echo "RedHatAI/Mistral-7B-Instruct-v0.3-GPTQ-4bit" ;;
+    deepseek_r1_qwen_14b_awq)    echo "casperhansen/deepseek-r1-distill-qwen-14b-awq" ;;
+    qwen3_4b)                     echo "Qwen/Qwen3-4B-Instruct-2507" ;;
+    qwen3_14b)                    echo "RedHatAI/Qwen3-14B-quantized.w4a16" ;;
+    qwen38_27b)                   echo "Qwen/Qwen3.8-27B" ;;
+    qwen38_27b_int4)              echo "RedHatAI/Qwen3.8-27B-INT4" ;;
+    granite_8b)                   echo "ibm-granite/granite-3.3-8b-instruct" ;;
+    llama31_8b)                   echo "meta-llama/Llama-3.1-8B-Instruct" ;;
+    whiterabbit_7b_awq)           echo "solidrust/WhiteRabbitNeo-7B-v1.5a-AWQ" ;;
+    *)                            echo "$1" ;;
   esac
 }
 
@@ -220,6 +231,12 @@ cmd_start() {
   local with_proxy="$1"
   local with_ui="$2"
   local with_smoke="$3"
+  local custom_config="$4"
+
+  if [ -n "$custom_config" ] && [ ! -r "$custom_config" ]; then
+    echo "Custom vLLM config is not readable: $custom_config" >&2
+    exit 1
+  fi
 
   # Model resolution
   local launch_model_key="$MODEL"
@@ -262,6 +279,13 @@ cmd_start() {
   local model_speculative_config="${RHAII_SPEC_CONFIG:-}"
 
   case "$launch_model_key" in
+    mistral_7b_gptq_4bit)
+      model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.92}"
+      model_max_model_len="${model_max_model_len:-8192}"
+      model_max_num_seqs="${model_max_num_seqs:-2}"
+      model_quantization="${model_quantization:-gptq_marlin}"
+      model_served_name="${model_served_name:-mistral7b}"
+      ;;
     deepseek_r1_qwen_14b_awq)
       model_gpu_memory_utilization="${model_gpu_memory_utilization:-0.90}"
       model_max_model_len="${model_max_model_len:-16384}"
@@ -381,6 +405,9 @@ cmd_start() {
   printf "  %-30s %s\n" "Prefix match unit:" "${model_prefix_match_unit:-engine default}"
   printf "  %-30s %s\n" "Offload prefetch:" "$model_offload_display"
   printf "  %-30s %s\n" "Speculative decoding:" "$model_speculative_display"
+  if [ -n "$custom_config" ]; then
+    printf "  %-30s %s\n" "Custom vLLM config:" "$custom_config"
+  fi
   echo "================================================================"
   echo
 
@@ -475,6 +502,7 @@ cmd_start() {
   RHAII_FOLLOW_LOGS=0 \
   RHAII_UPSTREAM="$RHAII_UPSTREAM" \
   RHAII_CACHE_DIR="$RHAII_CACHE_DIR" \
+  RHAII_VLLM_CONFIG="$custom_config" \
   HF_HUB_OFFLINE="$HF_HUB_OFFLINE" \
   MODEL_KEY="$launch_model_key" \
   MODEL="$launch_model" \
@@ -631,6 +659,37 @@ cmd_stop() {
 # ------------------------------
 # Dispatch
 # ------------------------------
+parse_start_options() {
+  with_proxy=0
+  with_ui=0
+  with_smoke=0
+  custom_config=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --bearer)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          echo "--bearer requires a non-empty value" >&2; usage; exit 1
+        fi
+        RHAII_API_KEY="$2"
+        shift
+        ;;
+      --custom-config)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          echo "--custom-config requires a file path" >&2; usage; exit 1
+        fi
+        custom_config="$2"
+        shift
+        ;;
+      --with-proxy) with_proxy=1 ;;
+      --with-ui) with_ui=1 ;;
+      --smoke-test) with_smoke=1 ;;
+      *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+    esac
+    shift
+  done
+}
+
 cmd="${1:-}"
 shift || true
 case "$cmd" in
@@ -638,7 +697,7 @@ case "$cmd" in
     sub="${1:-}"
     shift || true
     case "$sub" in
-      rhaii)   RHAII_UPSTREAM=0 ;;
+      rhaii)    RHAII_UPSTREAM=0 ;;
       upstream) RHAII_UPSTREAM=1 ;;
       *)
         echo "'start' requires a backend argument: 'rhaii' or 'upstream'" >&2
@@ -647,26 +706,13 @@ case "$cmd" in
         exit 1
         ;;
     esac
-    with_proxy=0
-    with_ui=0
-    with_smoke=0
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --bearer)
-          if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
-            echo "--bearer requires a non-empty value" >&2; usage; exit 1
-          fi
-          RHAII_API_KEY="$2"
-          shift
-          ;;
-        --with-proxy) with_proxy=1 ;;
-        --with-ui) with_ui=1 ;;
-        --smoke-test) with_smoke=1 ;;
-        *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
-      esac
-      shift
-    done
-    cmd_start "$with_proxy" "$with_ui" "$with_smoke"
+    parse_start_options "$@"
+    cmd_start "$with_proxy" "$with_ui" "$with_smoke" "$custom_config"
+    ;;
+  --custom-config)
+    RHAII_UPSTREAM=0
+    parse_start_options --custom-config "$@"
+    cmd_start "$with_proxy" "$with_ui" "$with_smoke" "$custom_config"
     ;;
   stop)
     cmd_stop

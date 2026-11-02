@@ -14,6 +14,7 @@ Every script has a `CONFIGURATION — edit these` block at the top, above a `DO 
 - [`start-webui.sh`](start-webui.sh) — image, branding, host/port, cert dir, feature toggles
 - [`orin-vllm.sh`](orin-vllm.sh) — Jetson model, container, memory tuning
 - [`tools/benchmark.sh`](tools/benchmark.sh) — containerized performance and quality benchmarks
+- [`rag.sh`](rag.sh) — independent local OpenSearch service and deterministic RAG fixtures
 
 ## Start / Stop
 
@@ -24,6 +25,7 @@ Every script has a `CONFIGURATION — edit these` block at the top, above a `DO 
 ./inference-manage.sh start rhaii --with-ui    # + Open WebUI (and TLS proxy on :443)
 ./inference-manage.sh start rhaii --bearer KEY # require "Authorization: Bearer KEY" on /v1/*
 ./inference-manage.sh start rhaii --smoke-test # send a test prompt after boot; nonzero exit on failure
+./inference-manage.sh --custom-config FILE     # start RHAII with extra vLLM arguments
 ./inference-manage.sh stop                     # stop every running component
 ./inference-manage.sh smoke-test               # probe an already-running backend
 ```
@@ -34,12 +36,62 @@ runtime parameters before launch, including context window, batching limits,
 sequence concurrency, memory utilization, dtype, quantization, and optional
 offload or speculative-decoding settings. Values supplied through environment
 variables are reflected in the summary.
-Flags combine. Set `UPSTREAM=1` in the config block to default to upstream vLLM, or use `start upstream` for a one-off run. To change the model, edit `MODEL` at the top of the script. The settings table printed on startup summarizes the active configuration. Lower-level launchers:
+Flags combine. Set `UPSTREAM=1` in the config block to default to upstream vLLM, or use `start upstream` for a one-off run. To change the model, edit `MODEL` at the top of the script. The default is `mistral_7b_gptq_4bit` (`RedHatAI/Mistral-7B-Instruct-v0.3-GPTQ-4bit`). The settings table printed on startup summarizes the active configuration. Lower-level launchers:
 
 ```bash
 ./rhaii-universal.sh [--api-key KEY]                    # run the backend directly (env RHAII_UPSTREAM=1 for upstream)
 HF_HUB_OFFLINE=0 HF_TOKEN=hf_xxx ./model-downloader.sh  # cache a model only
 ```
+
+### Extra vLLM arguments
+
+Pass `--custom-config <file>` with `start rhaii`, `start upstream`, or as the
+RHAII shorthand shown above. The file is deliberately not shell syntax: every
+non-empty, non-comment line is exactly one vLLM argument. Use
+`--option=value` for an option with a value, which avoids ambiguous quoting and
+shell evaluation. The arguments are appended after RHAII's defaults, so
+duplicate vLLM options override those defaults.
+
+```text
+# my-args.conf
+--max-model-len=16384
+--max-num-seqs=1
+--gpu-memory-utilization=0.90
+--enable-prefix-caching
+```
+
+The launcher controls `--model`, `--host`, `--port`, and `--api-key`; those
+arguments are rejected in the custom file so the orchestrator's model
+selection, readiness check, port publishing, and bearer-token behavior remain
+consistent.
+
+## Independent RAG storage
+
+[`rag.sh`](rag.sh) manages a local, independent OpenSearch service for Pi. It
+does not depend on Open WebUI or start with `inference-manage.sh`; RHAII remains
+an OpenAI-compatible inference and tool-calling endpoint. All its state lives under `$HOME`.
+
+```bash
+./rag.sh setup    # first run: create local credentials, start OpenSearch, load fixtures
+./rag.sh status   # authenticated cluster health
+./rag.sh stop     # stop the container; data remains in $HOME/rhaii-opensearch-data
+./rag.sh start    # restart it later
+```
+
+The default listener is `https://127.0.0.1:9200`. Its generated local admin
+password is stored with mode `0600` at
+`$HOME/.config/rhaii/rag/opensearch-admin-password`. The OpenSearch image's
+demo TLS configuration is deliberately limited to loopback-only development;
+do not expose it to a LAN without replacing that configuration and using a
+restricted Pi credential.
+
+`setup` loads three deterministic text fixtures into `rhaii-rag-fixtures-v1`.
+They prove indexing and lexical retrieval only. Pi owns embedding generation,
+vector mappings/indexes, retrieval, reranking, and passing retrieved context
+or tool results to RHAII.
+
+OpenSearch requires `vm.max_map_count >= 262144`. The launcher checks it and,
+when needed, prints the exact `sysctl` command.
 
 ## Benchmarking
 
@@ -74,6 +126,7 @@ each benchmark container at `/results`.
 
 | key | model id |
 |---|---|
+| `mistral_7b_gptq_4bit` | `RedHatAI/Mistral-7B-Instruct-v0.3-GPTQ-4bit` (default; GPTQ Marlin) |
 | `deepseek_r1_qwen_14b_awq` | `casperhansen/deepseek-r1-distill-qwen-14b-awq` |
 | `qwen3_4b` | `Qwen/Qwen3-4B-Instruct-2507` |
 | `qwen3_14b` | `RedHatAI/Qwen3-14B-quantized.w4a16` |
@@ -131,14 +184,14 @@ OpenAI-compatible on `/v1/*`. Route port `8000` to the host and point clients at
 ```bash
 curl http://<host>:8000/v1/chat/completions \
   -H "Content-Type: application/json" -H "Authorization: Bearer EMPTY" \
-  -d '{"model":"qwen3_14b","messages":[{"role":"user","content":"Give me three Linux tips."}]}'
+  -d '{"model":"mistral_7b_gptq_4bit","messages":[{"role":"user","content":"Give me three Linux tips."}]}'
 ```
 
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="http://<host>:8000/v1", api_key="EMPTY")
 print(client.chat.completions.create(
-    model="qwen3_14b",
+    model="mistral_7b_gptq_4bit",
     messages=[{"role": "user", "content": "Hello"}],
 ).choices[0].message.content)
 ```
@@ -150,4 +203,3 @@ print(client.chat.completions.create(
 ## Future work
 
 - Move the shared values (cache dir, ports, WebUI host, container names) into a single `rhaii-inference.conf` sourced by all scripts.
-- Add a Mistral model to the catalog.
